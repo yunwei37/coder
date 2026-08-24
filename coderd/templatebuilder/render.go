@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"text/template"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"golang.org/x/xerrors"
 )
 
@@ -19,13 +21,23 @@ type ImageOption struct {
 type BaseRenderContext struct {
 	ContainerImage string
 	ImageOptions   []ImageOption
-	Variables      map[string]string
+	// RegistryBase is the bare host of the module registry used in rendered
+	// module source paths (e.g. "registry.coder.com"): no scheme, no trailing
+	// slash, never empty. Compose normalizes it from the deployment config
+	// (CODER_TEMPLATE_BUILDER_REGISTRY_URL) via
+	// codersdk.NormalizeTemplateBuilderRegistryURL; direct RenderBaseTemplate
+	// callers must supply an already-normalized host, or the source renders as
+	// "/coder/...".
+	RegistryBase string
+	Variables    map[string]string
 }
 
 // ModuleRenderContext is the data passed to module .tf.tmpl files.
 type ModuleRenderContext struct {
-	// RegistryBase is the module registry URL from the deployment config
-	// (CODER_TEMPLATE_BUILDER_REGISTRY_URL).
+	// RegistryBase is the bare host of the module registry used in rendered
+	// module source paths (e.g. "registry.coder.com"): no scheme, no trailing
+	// slash, never empty. renderModules passes the host Compose already
+	// normalized from CODER_TEMPLATE_BUILDER_REGISTRY_URL.
 	RegistryBase string
 	// PinnedVersion is the module version from the catalog manifest.
 	PinnedVersion string
@@ -140,6 +152,19 @@ func ExtractAgentResourceName(hcl []byte) (string, error) {
 // moduleBlockPattern matches a `module "<name>"` block declaration anchored to
 // the start of a line in HCL.
 var moduleBlockPattern = regexp.MustCompile(`(?m)^[ \t]*module[ \t]+"([^"]+)"`)
+
+// validateRenderedBaseHCL parses rendered base HCL and returns the parser
+// diagnostic when it is malformed. Compose calls this before its module
+// early-return so a base that rendered to invalid HCL (for example, a registry
+// value that slipped past normalization and interpolated badly) fails with the
+// real syntax error instead of shipping a broken main.tf on the zero-module path
+// or failing later with a misleading missing-agent error on the module path.
+func validateRenderedBaseHCL(hclSrc []byte) error {
+	if _, diags := hclsyntax.ParseConfig(hclSrc, "rendered.tf", hcl.InitialPos); diags.HasErrors() {
+		return xerrors.Errorf("rendered base template is not valid HCL: %w", diags)
+	}
+	return nil
+}
 
 // ExtractModuleNames returns the labels of every module block declared in
 // rendered HCL, in declaration order. Matching is anchored to the start of a

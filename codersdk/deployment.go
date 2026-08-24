@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -4991,10 +4992,20 @@ Write out the current server config as YAML to stdout.`,
 			Description: "The base URL of the module registry used by the template builder for module source paths.",
 			Flag:        "template-builder-registry-url",
 			Env:         "CODER_TEMPLATE_BUILDER_REGISTRY_URL",
-			Value:       &c.TemplateBuilder.RegistryURL,
-			Default:     "registry.coder.com",
-			Group:       &deploymentGroupTemplateBuilder,
-			YAML:        "registryURL",
+			// Validate at server start so a malformed value fails where the
+			// operator set it, naming the option, instead of surfacing as a
+			// per-request 400 on every compose blamed on the wizard user. The
+			// value is a bare host interpolated into a Terraform module source;
+			// NormalizeTemplateBuilderRegistryURL rejects a scheme, credentials,
+			// path, or interpolation. An empty value is allowed and defaults at
+			// render time.
+			Value: serpent.Validate(&c.TemplateBuilder.RegistryURL, func(value *serpent.String) error {
+				_, err := NormalizeTemplateBuilderRegistryURL(value.Value())
+				return err
+			}),
+			Default: DefaultTemplateBuilderRegistryURL,
+			Group:   &deploymentGroupTemplateBuilder,
+			YAML:    "registryURL",
 		},
 	}
 
@@ -5120,6 +5131,46 @@ type AIConfig struct {
 	BridgeConfig      AIBridgeConfig      `json:"bridge,omitempty"`
 	BridgeProxyConfig AIBridgeProxyConfig `json:"aibridge_proxy,omitempty"`
 	Chat              ChatConfig          `json:"chat,omitempty" typescript:",notnull"`
+}
+
+// DefaultTemplateBuilderRegistryURL is the module registry the template builder
+// uses for module source paths when CODER_TEMPLATE_BUILDER_REGISTRY_URL is unset
+// or empty. It is a bare host (no scheme, no trailing slash), the shape
+// NormalizeTemplateBuilderRegistryURL enforces for any operator-supplied value.
+const DefaultTemplateBuilderRegistryURL = "registry.coder.com"
+
+var (
+	// templateBuilderRegistrySchemePattern matches a leading http:// or https://
+	// scheme, case-insensitively, so NormalizeTemplateBuilderRegistryURL can strip
+	// it before validating the host.
+	templateBuilderRegistrySchemePattern = regexp.MustCompile(`(?i)^https?://`)
+	// templateBuilderRegistryHostPattern matches a bare registry host: a DNS-style
+	// hostname with an optional port. It rejects a scheme, userinfo, path, query,
+	// fragment, whitespace, and HCL interpolation metacharacters, so the value is
+	// safe to interpolate verbatim into a Terraform module source string.
+	templateBuilderRegistryHostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$`)
+)
+
+// NormalizeTemplateBuilderRegistryURL canonicalizes the deployment's configured
+// module registry (CODER_TEMPLATE_BUILDER_REGISTRY_URL) into the bare host a
+// Terraform module source expects. An unset or empty value defaults to
+// DefaultTemplateBuilderRegistryURL. A leading http:// or https:// scheme (any
+// case) and trailing slashes are stripped. The result must be a bare host,
+// optionally with a port: a value carrying userinfo, a path, a query, a
+// fragment, whitespace, or HCL interpolation is rejected rather than silently
+// mangled, because the template builder interpolates it verbatim into a module
+// source string. The error never echoes the input, so a credential in a mis-set
+// value is not disclosed.
+func NormalizeTemplateBuilderRegistryURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return DefaultTemplateBuilderRegistryURL, nil
+	}
+	host := strings.TrimRight(templateBuilderRegistrySchemePattern.ReplaceAllString(trimmed, ""), "/")
+	if !templateBuilderRegistryHostPattern.MatchString(host) {
+		return "", xerrors.New(`template builder registry URL must be a bare host such as "registry.coder.com" (an optional port is allowed, but no scheme, credentials, path, or query); set it with the --template-builder-registry-url flag, the CODER_TEMPLATE_BUILDER_REGISTRY_URL environment variable, or the templateBuilder.registryURL YAML key`)
+	}
+	return host, nil
 }
 
 type TemplateBuilderConfig struct {
