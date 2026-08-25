@@ -4,8 +4,6 @@ import { type FC, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { toast } from "sonner";
 import { chatModelACL, updateChatModelACL } from "#/api/queries/chats";
-import { groupsByOrganization } from "#/api/queries/groups";
-import { organizationMembers } from "#/api/queries/organizations";
 import type * as TypesGen from "#/api/typesGenerated";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
 import { AvatarData } from "#/components/Avatar/AvatarData";
@@ -30,9 +28,9 @@ import {
 } from "#/components/Table/Table";
 import { getGroupSubtitle, isGroup } from "#/modules/groups";
 import {
-	UserOrGroupAutocomplete,
-	type UserOrGroupAutocompleteValue,
-} from "#/modules/workspaces/WorkspaceSharingForm/UserOrGroupAutocomplete";
+	ChatModelPrincipalAutocomplete,
+	type ChatModelPrincipalAutocompleteValue,
+} from "./ChatModelPrincipalAutocomplete";
 
 type ChatModelSharingDialogProps = {
 	open: boolean;
@@ -89,21 +87,19 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 	const queryClient = useQueryClient();
 	const [draft, setDraft] = useState<DraftACL>(emptyDraft);
 	const [initialACL, setInitialACL] = useState<DraftACL | null>(null);
+	const [userIdentities, setUserIdentities] = useState<
+		Record<string, TypesGen.MinimalUser>
+	>({});
+	const [groupIdentities, setGroupIdentities] = useState<
+		Record<string, TypesGen.Group>
+	>({});
 	const [initialized, setInitialized] = useState(false);
 	const [selectedOption, setSelectedOption] =
-		useState<UserOrGroupAutocompleteValue>(null);
+		useState<ChatModelPrincipalAutocompleteValue>(null);
 
 	const aclQuery = useQuery({
 		...chatModelACL(organizationId, modelId),
 		enabled: open && initialized,
-	});
-	const membersQuery = useQuery({
-		...organizationMembers(organizationId, { limit: 0 }),
-		enabled: open,
-	});
-	const groupsQuery = useQuery({
-		...groupsByOrganization(organizationId),
-		enabled: open,
 	});
 	const updateMutation = useMutation(updateChatModelACL(queryClient));
 
@@ -112,16 +108,26 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 			return;
 		}
 		let cancelled = false;
-		void aclQuery.refetch().then(({ data }) => {
-			if (cancelled || !data) {
+		void aclQuery.refetch().then(({ data, isError }) => {
+			if (cancelled || isError || !data) {
 				return;
 			}
 			const snapshot = {
-				user_roles: { ...data.user_roles },
-				group_roles: { ...data.group_roles },
+				user_roles: Object.fromEntries(
+					data.users.map((user) => [user.id, user.role]),
+				),
+				group_roles: Object.fromEntries(
+					data.groups.map((group) => [group.id, group.role]),
+				),
 			};
 			setInitialACL(snapshot);
 			setDraft(snapshot);
+			setUserIdentities(
+				Object.fromEntries(data.users.map((user) => [user.id, user])),
+			);
+			setGroupIdentities(
+				Object.fromEntries(data.groups.map((group) => [group.id, group])),
+			);
 			setInitialized(true);
 		});
 		return () => {
@@ -132,6 +138,8 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 	const reset = () => {
 		setDraft(emptyDraft());
 		setInitialACL(null);
+		setUserIdentities({});
+		setGroupIdentities({});
 		setInitialized(false);
 		setSelectedOption(null);
 		updateMutation.reset();
@@ -141,26 +149,12 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 		onOpenChange(false);
 	};
 
-	const members = membersQuery.data?.members ?? [];
-	const groups = groupsQuery.data ?? [];
 	const userIds = Object.keys(draft.user_roles);
 	const groupIds = Object.keys(draft.group_roles);
-	const excludedPrincipals = [
-		...members
-			.filter((member) => userIds.includes(member.user_id))
-			.map((member) => ({ id: member.user_id })),
-		...groups.filter((group) => groupIds.includes(group.id)),
-	];
-	const loadError =
-		(!initialized ? aclQuery.error : null) ??
-		(membersQuery.data === undefined ? membersQuery.error : null) ??
-		(groupsQuery.data === undefined ? groupsQuery.error : null);
-	const refetchError = loadError
-		? null
-		: (aclQuery.error ?? membersQuery.error ?? groupsQuery.error);
-	const isLoading =
-		!loadError &&
-		((open && !initialized) || membersQuery.isLoading || groupsQuery.isLoading);
+	const excludedPrincipalIds = [...userIds, ...groupIds];
+	const loadError = !initialized ? aclQuery.error : null;
+	const refetchError = initialized ? aclQuery.error : null;
+	const isLoading = !loadError && open && !initialized;
 	const isEmpty = userIds.length === 0 && groupIds.length === 0;
 	const isDirty =
 		initialized && initialACL !== null && !isEqual(draft, initialACL);
@@ -170,11 +164,19 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 			return;
 		}
 		if (isGroup(selectedOption)) {
+			setGroupIdentities((current) => ({
+				...current,
+				[selectedOption.id]: selectedOption,
+			}));
 			setDraft((current) => ({
 				...current,
 				group_roles: { ...current.group_roles, [selectedOption.id]: "read" },
 			}));
 		} else {
+			setUserIdentities((current) => ({
+				...current,
+				[selectedOption.id]: selectedOption,
+			}));
 			setDraft((current) => ({
 				...current,
 				user_roles: { ...current.user_roles, [selectedOption.id]: "read" },
@@ -253,11 +255,12 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 							className="flex flex-col gap-2 sm:flex-row sm:items-center"
 						>
 							<div className="min-w-0 flex-1">
-								<UserOrGroupAutocomplete
+								<ChatModelPrincipalAutocomplete
 									organizationId={organizationId}
 									value={selectedOption}
 									onChange={setSelectedOption}
-									exclude={excludedPrincipals}
+									modelId={modelId}
+									excludedPrincipalIds={excludedPrincipalIds}
 									className="w-full"
 								/>
 							</div>
@@ -290,8 +293,9 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 								</TableHeader>
 								<TableBody>
 									{groupIds.map((groupId) => {
-										const group = groups.find((item) => item.id === groupId);
-										const name = group?.display_name || group?.name || groupId;
+										const group = groupIdentities[groupId];
+										const name =
+											group?.display_name || group?.name || "Unknown group";
 										return (
 											<TableRow key={groupId}>
 												<TableCell>
@@ -318,17 +322,15 @@ export const ChatModelSharingDialog: FC<ChatModelSharingDialogProps> = ({
 										);
 									})}
 									{userIds.map((userId) => {
-										const member = members.find(
-											(item) => item.user_id === userId,
-										);
-										const name = member?.username || userId;
+										const user = userIdentities[userId];
+										const name = user?.username || "Unknown user";
 										return (
 											<TableRow key={userId}>
 												<TableCell>
 													<AvatarData
 														title={name}
-														subtitle={member?.name || member?.email || "User"}
-														src={member?.avatar_url}
+														subtitle={user?.name || "User"}
+														src={user?.avatar_url}
 													/>
 												</TableCell>
 												<TableCell>Use</TableCell>
