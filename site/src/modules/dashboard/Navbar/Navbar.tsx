@@ -42,6 +42,7 @@ export const Navbar: React.FC = () => {
 		permissions.createAnyMCPServerConfig ||
 		permissions.updateAnyMCPServerConfig ||
 		permissions.deleteAnyMCPServerConfig ||
+		permissions.updateAnyTemplate ||
 		canAccessAnyModel;
 	const canViewModels =
 		!canViewAISettings && accessibleModelOrgsQuery.organizations.length > 0;
