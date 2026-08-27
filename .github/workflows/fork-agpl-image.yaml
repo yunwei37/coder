@@ -48,20 +48,18 @@ jobs:
           make -j build/coder_linux_{amd64,arm64}
 
       - name: Build and smoke-test images
-        env:
-          CODER_BASE_IMAGE_TAG: ghcr.io/coder/coder-base@sha256:e872a939530ed2d9eace842c985ba951bdeea78740f37dc1745eae8cfb633b04
         run: |
           set -euxo pipefail
           image_base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/coder"
           amd64_image="$image_base:v2.34.7-agpl-amd64"
           arm64_image="$image_base:v2.34.7-agpl-arm64"
 
-          ./scripts/build_docker.sh \
+          CODER_BASE_IMAGE_TAG=ghcr.io/coder/coder-base@sha256:1987d9096302d88646082a1e88adf7ac71db1ba075d665c64193e19d1ce802bd ./scripts/build_docker.sh \
             --arch amd64 \
             --version 2.34.7 \
             --target "$amd64_image" \
             build/coder_linux_amd64
-          ./scripts/build_docker.sh \
+          CODER_BASE_IMAGE_TAG=ghcr.io/coder/coder-base@sha256:9e1740fa7cf750f71725aa715699f99c36e75ff4524fa58a0b4e5d71d7624d27 ./scripts/build_docker.sh \
             --arch arm64 \
             --version 2.34.7 \
             --target "$arm64_image" \
