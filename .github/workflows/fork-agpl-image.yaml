@@ -65,10 +65,10 @@ jobs:
             --target "$arm64_image" \
             build/coder_linux_arm64
 
-          docker run --rm "$amd64_image" version | tee build/agpl-version.txt
-          docker run --rm ghcr.io/coder/coder:v2.34.7 version | tee build/upstream-version.txt
-          docker run --rm "$amd64_image" --help > build/agpl-help.txt
-          docker run --rm ghcr.io/coder/coder:v2.34.7 --help > build/upstream-help.txt
+          docker run --rm --entrypoint /opt/coder "$amd64_image" version | tee build/agpl-version.txt
+          docker run --rm --entrypoint /opt/coder ghcr.io/coder/coder:v2.34.7 version | tee build/upstream-version.txt
+          docker run --rm --entrypoint /opt/coder "$amd64_image" --help > build/agpl-help.txt
+          docker run --rm --entrypoint /opt/coder ghcr.io/coder/coder:v2.34.7 --help > build/upstream-help.txt
           diff -u build/upstream-help.txt build/agpl-help.txt > build/help.diff || true
 
           docker push "$amd64_image"
