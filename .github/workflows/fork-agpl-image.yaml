@@ -1,0 +1,109 @@
+name: Build Coder v2.34.7 AGPL image
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176 # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout v2.34.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: v2.34.7
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Login to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          use-cache: false
+
+      - name: Build AGPL binaries
+        env:
+          CODER_BUILD_AGPL: "1"
+        run: |
+          set -euxo pipefail
+          make gen/mark-fresh
+          make -j build/coder_linux_{amd64,arm64}
+
+      - name: Build and smoke-test images
+        env:
+          CODER_BASE_IMAGE_TAG: ghcr.io/coder/coder-base@sha256:e872a939530ed2d9eace842c985ba951bdeea78740f37dc1745eae8cfb633b04
+        run: |
+          set -euxo pipefail
+          image_base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/coder"
+          amd64_image="$image_base:v2.34.7-agpl-amd64"
+          arm64_image="$image_base:v2.34.7-agpl-arm64"
+
+          ./scripts/build_docker.sh \
+            --arch amd64 \
+            --version 2.34.7 \
+            --target "$amd64_image" \
+            build/coder_linux_amd64
+          ./scripts/build_docker.sh \
+            --arch arm64 \
+            --version 2.34.7 \
+            --target "$arm64_image" \
+            build/coder_linux_arm64
+
+          docker run --rm "$amd64_image" version | tee build/agpl-version.txt
+          docker run --rm ghcr.io/coder/coder:v2.34.7 version | tee build/upstream-version.txt
+          docker run --rm "$amd64_image" --help > build/agpl-help.txt
+          docker run --rm ghcr.io/coder/coder:v2.34.7 --help > build/upstream-help.txt
+          diff -u build/upstream-help.txt build/agpl-help.txt > build/help.diff || true
+
+          docker push "$amd64_image"
+          docker push "$arm64_image"
+          ./scripts/build_docker_multiarch.sh \
+            --push \
+            --version 2.34.7 \
+            --target "$image_base:v2.34.7-agpl" \
+            "$amd64_image" "$arm64_image"
+
+          {
+            echo '### Runtime comparison'
+            echo
+            echo '```text'
+            cat build/upstream-version.txt
+            cat build/agpl-version.txt
+            echo '```'
+            echo
+            echo '### Root command help diff'
+            echo
+            echo '```diff'
+            head -n 200 build/help.diff
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload comparison output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coder-v2.34.7-runtime-comparison
+          retention-days: 7
+          path: |
+            build/agpl-version.txt
+            build/upstream-version.txt
+            build/agpl-help.txt
+            build/upstream-help.txt
+            build/help.diff
