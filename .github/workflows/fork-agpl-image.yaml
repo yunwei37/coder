@@ -1,7 +1,12 @@
-name: Build Coder v2.34.7 AGPL image
+name: Build Coder AGPL image
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Upstream Coder release to build (without the v prefix)
+        required: true
+        default: "2.34.10"
 
 permissions: {}
 
@@ -17,10 +22,10 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Checkout v2.34.7
+      - name: Checkout v${{ inputs.version }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: v2.34.7
+          ref: v${{ inputs.version }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -49,39 +54,45 @@ jobs:
           make -j build/coder_linux_{amd64,arm64}
 
       - name: Build and smoke-test images
+        env:
+          # Same base-image reference upstream's release workflow derives with
+          # CODER_IMAGE_BASE=ghcr.io/coder/coder-base ./scripts/image_tag.sh,
+          # so this build tracks the release instead of a hand-pinned digest.
+          CODER_BASE_IMAGE_TAG: ghcr.io/coder/coder-base:v${{ inputs.version }}
         run: |
           set -euxo pipefail
+          version="${{ inputs.version }}"
           image_base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/coder"
-          amd64_image="$image_base:v2.34.7-agpl-amd64"
-          arm64_image="$image_base:v2.34.7-agpl-arm64"
+          amd64_image="$image_base:v${version}-agpl-amd64"
+          arm64_image="$image_base:v${version}-agpl-arm64"
 
-          CODER_BASE_IMAGE_TAG=ghcr.io/coder/coder-base@sha256:1987d9096302d88646082a1e88adf7ac71db1ba075d665c64193e19d1ce802bd ./scripts/build_docker.sh \
+          ./scripts/build_docker.sh \
             --arch amd64 \
-            --version 2.34.7 \
+            --version "$version" \
             --target "$amd64_image" \
             build/coder_linux_amd64
-          CODER_BASE_IMAGE_TAG=ghcr.io/coder/coder-base@sha256:9e1740fa7cf750f71725aa715699f99c36e75ff4524fa58a0b4e5d71d7624d27 ./scripts/build_docker.sh \
+          ./scripts/build_docker.sh \
             --arch arm64 \
-            --version 2.34.7 \
+            --version "$version" \
             --target "$arm64_image" \
             build/coder_linux_arm64
 
           docker run --rm --entrypoint /opt/coder "$amd64_image" version | tee build/agpl-version.txt
-          docker run --rm --entrypoint /opt/coder ghcr.io/coder/coder:v2.34.7 version | tee build/upstream-version.txt
-          grep -q '^Coder (AGPL) v2\.34\.7' build/agpl-version.txt
+          docker run --rm --entrypoint /opt/coder "ghcr.io/coder/coder:v${version}" version | tee build/upstream-version.txt
+          grep -q "^Coder (AGPL) v${version}" build/agpl-version.txt
           for command in server create start stop ssh templates task; do
             docker run --rm --entrypoint /opt/coder "$amd64_image" "$command" --help >/dev/null
           done
           docker run --rm --entrypoint /opt/coder "$amd64_image" --help > build/agpl-help.txt
-          docker run --rm --entrypoint /opt/coder ghcr.io/coder/coder:v2.34.7 --help > build/upstream-help.txt
+          docker run --rm --entrypoint /opt/coder "ghcr.io/coder/coder:v${version}" --help > build/upstream-help.txt
           diff -u build/upstream-help.txt build/agpl-help.txt > build/help.diff || true
 
           docker push "$amd64_image"
           docker push "$arm64_image"
           ./scripts/build_docker_multiarch.sh \
             --push \
-            --version 2.34.7 \
-            --target "$image_base:v2.34.7-agpl" \
+            --version "$version" \
+            --target "$image_base:v${version}-agpl" \
             "$amd64_image" "$arm64_image"
 
           {
@@ -102,7 +113,7 @@ jobs:
       - name: Upload comparison output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coder-v2.34.7-runtime-comparison
+          name: coder-v${{ inputs.version }}-runtime-comparison
           retention-days: 7
           path: |
             build/agpl-version.txt
